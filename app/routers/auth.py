@@ -1,14 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from app.schemas.user import UserCreate, UserOut, UserLogin
-from app.schemas.token import Token
-from app.models.user import User as UserModel
+from datetime import datetime, timedelta
+from jose import jwt
 from app.core.database import SessionLocal
-from app.utils.security import hash_password, verify_password, create_access_token
+from app.models.user import User
+from app.schemas.user import UserCreate, UserLogin
+from app.schemas.token import Token
+from app.core.security import hash_password, verify_password
+from dotenv import load_dotenv
+import os
 
-router = APIRouter(tags=["Auth"], prefix="/auth")
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# Dependency
+load_dotenv()
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -16,28 +26,30 @@ def get_db():
     finally:
         db.close()
 
-# Register
-@router.post("/register", response_model=UserOut)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    if db.query(UserModel).filter(UserModel.email == user.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    new_user = UserModel(
-        name=user.name,
-        email=user.email,
-        password=hash_password(user.password)
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
 
-# Login
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+@router.post("/register")
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    if db.query(User).filter((User.name == user.name) | (User.email == user.email)).first():
+        raise HTTPException(status_code=400, detail="Username or email already exists")
+    hashed_pw = hash_password(user.password)
+    db_user = User(name=user.name, email=user.email, password=hashed_pw)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return {"message": "User registered successfully"}
+
+
 @router.post("/login", response_model=Token)
-def login(user: UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(UserModel).filter(UserModel.email == user.email).first()
+def login(user:  OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == user.username).first()
     if not db_user or not verify_password(user.password, db_user.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = create_access_token({"sub": db_user.email})
-    return {"access_token": token, "token_type": "bearer"}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    access_token = create_access_token(data={"sub": db_user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
