@@ -9,6 +9,7 @@ from app.schemas.user import UserCreate, UserLogin
 from app.schemas.token import Token
 from app.core.security import hash_password, verify_password
 from dotenv import load_dotenv
+from app.utils.response import success_response, error_response
 import os
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -37,19 +38,27 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 @router.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter((User.name == user.name) | (User.email == user.email)).first():
-        raise HTTPException(status_code=400, detail="Username or email already exists")
+        return error_response("Username or email already exists")
     hashed_pw = hash_password(user.password)
     db_user = User(name=user.name, email=user.email, password=hashed_pw)
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return {"message": "User registered successfully"}
+    return success_response("User registered successfully")
 
 
-@router.post("/login", response_model=Token)
-def login(user:  OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@router.post("/token", response_model=Token, include_in_schema=False)
+def token(user:  OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.username).first()
     if not db_user or not verify_password(user.password, db_user.password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+       return error_response("Invalid credentials")
     access_token = create_access_token(data={"sub": db_user.email})
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/login", response_model=None)
+def login(user:  UserLogin = Depends(), db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if not db_user or not verify_password(user.password, db_user.password):
+       return error_response("Invalid credentials")
+    access_token = create_access_token(data={"sub": db_user.email})
+    return success_response("Login Successfull", {"access_token": access_token, "token_type": "bearer"})
